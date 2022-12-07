@@ -1,4 +1,3 @@
-
 use bevy::render::renderer::RenderAdapterInfo;
 use bevy::{prelude::*, window::WindowId, winit::WinitWindows};
 
@@ -12,6 +11,8 @@ pub mod gl {
 use glutin::api::egl::device::Device;
 use glutin::config::{ConfigSurfaceTypes, ConfigTemplate, ConfigTemplateBuilder};
 use glutin::context::{ContextApi, ContextAttributesBuilder};
+
+use glutin::api::egl::context::NotCurrentContext;
 use inochi2d::{
     camera::Inochi2DCamera, core::Inochi2D, puppet::Inochi2DPuppet, scene::Inochi2DScene,
     MONOTONIC_CLOCK,
@@ -20,26 +21,24 @@ use raw_window_handle::HasRawWindowHandle;
 
 use glutin::prelude::*;
 
-use std::cell::RefCell;
 use std::ffi::CString;
 use std::io::Cursor;
 use std::path::PathBuf;
-fn main() {
-    let mut app = App::new();
-    app.add_plugins(DefaultPlugins);
-    app.add_startup_system(inochi);
-    app.add_system(inochi_render);
-    info!("Starting launcher: Native");
-    app.run();
+use std::sync::Mutex;
+
+
+#[derive(Resource)]
+pub struct Inochi2DRes {
+    ctx: Mutex<Inochi2D>,
+    puppet: Mutex<Inochi2DPuppet>,
+    cam: Mutex<Inochi2DCamera>,
+    scene: Mutex<Inochi2DScene>,
+    gl_ctx: Mutex<NotCurrentContext>,
+    renderbuffer: Mutex<u32>,
+    framebuffer: Mutex<u32>,
 }
 
-pub struct Inochi2DRes {
-    ctx: RefCell<Inochi2D>,
-    puppet: RefCell<Inochi2DPuppet>,
-    cam: RefCell<Inochi2DCamera>,
-    scene: RefCell<Inochi2DScene>,
-}
-fn inochi(commands: Commands) {
+fn inochi(mut commands: Commands) {
     use glutin::api::egl::device::Device;
     use glutin::api::egl::display::Display;
     use glutin::config::{ConfigSurfaceTypes, ConfigTemplate, ConfigTemplateBuilder};
@@ -60,7 +59,6 @@ fn inochi(commands: Commands) {
     }
 
     let device = devices.first().expect("No available devices");
-
     // Create a display using the device.
     let display = unsafe { Display::with_device(device, None) }.expect("Failed to create display");
 
@@ -101,7 +99,7 @@ fn inochi(commands: Commands) {
     };
 
     // Make the context current for rendering
-    let _context = not_current.make_current_surfaceless().unwrap();
+    let context = not_current.make_current_surfaceless().unwrap();
 
     // Create a framebuffer for offscreen rendering since we do not have a window.
     let mut framebuffer = 0;
@@ -111,9 +109,9 @@ fn inochi(commands: Commands) {
         display.get_proc_address(symbol.as_c_str()).cast()
     });
     /* Create a new Inochi2D context */
-    let ctx = RefCell::new(Inochi2D::new(MONOTONIC_CLOCK, 800, 800));
+    let ctx = Mutex::new(Inochi2D::new(MONOTONIC_CLOCK, 800, 800));
     /* Create a new Inochi2D puppet from a file */
-    let puppet = RefCell::new(Inochi2DPuppet::new(PathBuf::from("./examples/Midori.inx")).unwrap());
+    let puppet = Mutex::new(Inochi2DPuppet::new(PathBuf::from("./examples/Midori.inx")).unwrap());
 
     unsafe {
         gl.GenFramebuffers(1, &mut framebuffer);
@@ -129,25 +127,30 @@ fn inochi(commands: Commands) {
         );
     }
 
-  
     /* Setup the camera and zoom */
     let zoom: f64 = 0.15;
-    let cam = RefCell::new(Inochi2DCamera::new(Some(zoom as f32), Some(0.0), Some(0.0)));
+    let cam = Mutex::new(Inochi2DCamera::new(Some(zoom as f32), Some(0.0), Some(0.0)));
 
     /* Setup the Inochi2D scene to draw */
-    let scene = RefCell::new(Inochi2DScene::new());
+    let scene = Mutex::new(Inochi2DScene::new());
+
+    commands.insert_resource(Inochi2DRes {
+        scene,
+        cam,
+        puppet,
+        ctx,
+        gl_ctx: Mutex::new(context.make_not_current().unwrap()),
+        renderbuffer: Mutex::new(renderbuffer),
+        framebuffer: Mutex::new(framebuffer),
+    });
 }
 
-pub fn inochi_render(
-    inochi: NonSend<Inochi2DRes>,
-    adapter: Res<RenderAdapterInfo>,
-    windows: NonSend<WinitWindows>,
-) {
+pub fn inochi_render(inochi: Res<Inochi2DRes>) {
     let (mut puppet, mut scene, mut ctx) = {
         (
-            inochi.puppet.borrow_mut(),
-            inochi.scene.borrow_mut(),
-            inochi.ctx.borrow_mut(),
+            inochi.puppet.lock().unwrap(),
+            inochi.scene.lock().unwrap(),
+            inochi.ctx.lock().unwrap(),
         )
     };
     /* Update and then draw the puppet */
@@ -163,10 +166,20 @@ pub fn inochi_render(
     );
 }
 
+fn inochi_update_viewport() {}
+
 fn config_template() -> ConfigTemplate {
     ConfigTemplateBuilder::default()
         .with_alpha_size(8)
         // Offscreen rendering has no support window surface support.
         .with_surface_type(ConfigSurfaceTypes::empty())
         .build()
+}
+fn main() {
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins);
+    app.add_startup_system(inochi);
+    app.add_system(inochi_render);
+    info!("Starting launcher: Native");
+    app.run();
 }
