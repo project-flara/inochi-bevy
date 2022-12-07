@@ -1,11 +1,10 @@
-use bevy::render::renderer::RenderAdapterInfo;
-use bevy::{prelude::*, window::WindowId, winit::WinitWindows};
+
+use bevy::window::WindowResized;
+use bevy::{prelude::*,};
 
 pub mod gl {
     #![allow(clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/gl_bindings.rs"));
-
-    pub use Gles2 as Gl;
 }
 
 use glutin::api::egl::device::Device;
@@ -17,12 +16,8 @@ use inochi2d::{
     camera::Inochi2DCamera, core::Inochi2D, puppet::Inochi2DPuppet, scene::Inochi2DScene,
     MONOTONIC_CLOCK,
 };
-use raw_window_handle::HasRawWindowHandle;
-
-use glutin::prelude::*;
 
 use std::ffi::CString;
-use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -35,9 +30,9 @@ pub struct Inochi2DRes {
     gl_ctx: Mutex<NotCurrentContext>,
     renderbuffer: Mutex<u32>,
     framebuffer: Mutex<u32>,
+    display: Mutex<glutin::api::egl::display::Display>,
+    gl: Mutex<gl::Gl>,
 }
-
-fn inochi_update_viewport() {}
 
 fn config_template() -> ConfigTemplate {
     ConfigTemplateBuilder::default()
@@ -47,13 +42,13 @@ fn config_template() -> ConfigTemplate {
         .build()
 }
 
-
 pub struct Inochi2DPlugin;
 
 impl Plugin for Inochi2DPlugin {
     fn build(&self, app: &mut App) {
         app.add_startup_system(Self::startup)
-            .add_system(Self::render);
+            .add_system(Self::render)
+            .add_system(Self::resize);
     }
 }
 
@@ -162,11 +157,13 @@ impl Inochi2DPlugin {
             gl_ctx: Mutex::new(context.make_not_current().unwrap()),
             renderbuffer: Mutex::new(renderbuffer),
             framebuffer: Mutex::new(framebuffer),
+            display: Mutex::new(display),
+            gl: Mutex::new(gl),
         });
     }
 
     fn render(inochi: Res<Inochi2DRes>) {
-        let (mut puppet, mut scene, mut ctx) = {
+        let (mut puppet, mut scene, ctx) = {
             (
                 inochi.puppet.lock().unwrap(),
                 inochi.scene.lock().unwrap(),
@@ -184,5 +181,17 @@ impl Inochi2DPlugin {
             (ctx.view_width + 0) as f32,
             (&ctx.view_height + 0) as f32,
         );
+    }
+
+    fn resize(mut resize: EventReader<WindowResized>, inochi: Res<Inochi2DRes>) {
+        for resize in resize.iter() {
+            let (mut ctx, gl) = { (inochi.ctx.lock().unwrap(), inochi.gl.lock().unwrap()) };
+            let w = resize.width as i32 + 0;
+            let h = resize.height as i32 + 0;
+            ctx.set_viewport(w, h);
+            unsafe {
+                gl.Viewport(0, 0, w, h);
+            }
+        }
     }
 }
