@@ -199,16 +199,27 @@ impl Inochi2DPlugin {
 
     fn resize(mut resize: EventReader<WindowResized>, inochi: Res<Inochi2DRes>) {
         for resize in resize.iter() {
-            println!("Hii end resize rddender");
-            let (mut ctx, gl) = { (inochi.ctx.lock().unwrap(), inochi.gl.lock().unwrap()) };
-            let w = resize.width as i32 + 0;
-            let h = resize.height as i32 + 0;
-            ctx.set_viewport(w, h);
-            println!("Hii end resize render");
-            unsafe {
-                gl.Viewport(0, 0, w, h);
-            }
-            println!("Hii end resize render");
+            let mut gl_ctx = inochi.gl_ctx.lock().unwrap();
+            println!("Hii");
+            replace_with(
+                &mut (*gl_ctx),
+                || todo!(),
+                |gl_ctx| {
+                    let gl_ctx = gl_ctx.make_current_surfaceless().unwrap();
+                    println!("Hii end resize rddender");
+                    let (mut ctx, gl) = { (inochi.ctx.lock().unwrap(), inochi.gl.lock().unwrap()) };
+                    let w = resize.width as i32 + 0;
+                    let h = resize.height as i32 + 0;
+                    ctx.set_viewport(w, h);
+                    println!("Hii end resize render");
+                    unsafe {
+                        gl.Viewport(0, 0, w, h);
+                    }
+                    println!("Hii end resize render");
+
+                    gl_ctx.make_not_current().unwrap()
+                },
+            );
         }
     }
 }
