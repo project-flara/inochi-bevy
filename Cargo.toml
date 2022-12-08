@@ -17,6 +17,7 @@ glutin_egl_sys = "0.3.1"
 once_cell = "1.16.0"
 libloading = "0.7.4"
 replace_with = "0.1.7"
+png = "0.17.7"
 [build-dependencies]
 gl_generator = "0.14"
 cfg_aliases = "0.1.1"

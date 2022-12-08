@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::render::texture::{CompressedImageFormats, ImageType};
 use bevy::window::WindowResized;
 use glutin::prelude::PossiblyCurrentGlContext;
 use replace_with::replace_with;
@@ -165,13 +166,14 @@ impl Inochi2DPlugin {
         println!("Hii end");
     }
 
-    fn render(inochi: Res<Inochi2DRes>) {
-        let (mut puppet, mut scene, ctx, mut gl_ctx) = {
+    fn render(inochi: Res<Inochi2DRes>, mut images: ResMut<Assets<Image>>) {
+        let (mut puppet, mut scene, ctx, mut gl_ctx, gl) = {
             (
                 inochi.puppet.lock().unwrap(),
                 inochi.scene.lock().unwrap(),
                 inochi.ctx.lock().unwrap(),
                 inochi.gl_ctx.lock().unwrap(),
+                inochi.gl.lock().unwrap(),
             )
         };
         replace_with(
@@ -189,7 +191,39 @@ impl Inochi2DPlugin {
                     (&ctx.view_height + 0) as f32,
                 );
                 println!("Hii end render");
+                let mut buffer = Vec::<u8>::with_capacity(1280 * 720 * 4);
 
+                unsafe {
+                    // Wait for the previous commands to finish before reading from the framebuffer.
+                    gl.Finish();
+                    // Download the framebuffer contents to the buffer.
+                    gl.ReadPixels(
+                        0,
+                        0,
+                        1280,
+                        720,
+                        gl::RGBA,
+                        gl::UNSIGNED_BYTE,
+                        buffer.as_mut_ptr() as *mut _,
+                    );
+                    buffer.set_len(1280 * 720 * 4);
+                }
+                let file = Vec::new();
+                let mut encoder = png::Encoder::new(file.clone(), 1280, 720);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder.set_color(png::ColorType::Rgba);
+                let mut png_writer = encoder.write_header().unwrap();
+
+                png_writer.write_image_data(&buffer[..]).unwrap();
+                png_writer.finish().unwrap();
+                let image = Image::from_buffer(
+                    &file.clone(),
+                    ImageType::MimeType("image/png"),
+                    CompressedImageFormats::NONE,
+                    false,
+                )
+                .unwrap();
+                images.add(image);
                 gl_ctx.make_not_current().unwrap()
             },
         );
@@ -215,9 +249,13 @@ impl Inochi2DPlugin {
                     unsafe {
                         gl.Viewport(0, 0, w, h);
                     }
-                    println!("Hii end resize render");
+                    println!("Hii end after vresize render");
 
-                    gl_ctx.make_not_current().unwrap()
+                    let gl_ctx = gl_ctx.make_not_current().unwrap();
+
+                    println!("Hiid d");
+
+                    gl_ctx
                 },
             );
         }
