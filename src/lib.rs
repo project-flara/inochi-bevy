@@ -1,7 +1,13 @@
 use bevy::prelude::*;
 use bevy::render::texture::{CompressedImageFormats, ImageType};
-use bevy::window::WindowResized;
-use glutin::prelude::PossiblyCurrentGlContext;
+use bevy::window::{WindowId, WindowResized};
+use bevy::winit::WinitWindows;
+use glutin::api::egl::config::Config;
+use glutin::api::egl::surface::Surface;
+use glutin::display::GetGlDisplay;
+use glutin::prelude::{GlDisplay, NotCurrentGlContextSurfaceAccessor, PossiblyCurrentGlContext};
+use glutin::surface::{SurfaceAttributesBuilder, WindowSurface};
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawWindowHandle};
 use replace_with::replace_with;
 
 pub mod gl {
@@ -20,6 +26,7 @@ use inochi2d::{
 };
 
 use std::ffi::CString;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -30,8 +37,7 @@ pub struct Inochi2DRes {
     cam: Mutex<Inochi2DCamera>,
     scene: Mutex<Inochi2DScene>,
     gl_ctx: Mutex<NotCurrentContext>,
-    renderbuffer: Mutex<u32>,
-    framebuffer: Mutex<u32>,
+    config: Mutex<Config>,
     display: Mutex<glutin::api::egl::display::Display>,
     gl: Mutex<gl::Gl>,
 }
@@ -55,7 +61,9 @@ impl Plugin for Inochi2DPlugin {
 }
 
 impl Inochi2DPlugin {
-    fn startup(mut commands: Commands) {
+    fn startup(world: &mut World) {
+        let windows = world.get_non_send_resource::<WinitWindows>().unwrap();
+        let primary = windows.get_window(WindowId::primary()).unwrap();
         use glutin::api::egl::display::Display;
 
         use glutin::prelude::*;
@@ -66,18 +74,17 @@ impl Inochi2DPlugin {
 
         for (index, device) in devices.iter().enumerate() {
             println!(
-                "Device {}: Name: {} Vendor: {}",
+                "Device {}: Name: {} Vendor: {} EXTs: {:#?}",
                 index,
                 device.name().unwrap_or("UNKNOWN"),
-                device.vendor().unwrap_or("UNKNOWN")
+                device.vendor().unwrap_or("UNKNOWN"),
+                device.extensions()
             );
         }
 
         let device = devices.first().expect("No available devices");
         // Create a display using the device.
-        let display =
-            unsafe { Display::with_device(device, None) }.expect("Failed to create display");
-
+        let display = unsafe { Display::new(primary.raw_display_handle()) }.unwrap();
         let template = config_template();
         let config = unsafe { display.find_configs(template) }
             .unwrap()
@@ -117,10 +124,6 @@ impl Inochi2DPlugin {
         // Make the context current for rendering
         let context = not_current.make_current_surfaceless().unwrap();
 
-        // Create a framebuffer for offscreen rendering since we do not have a window.
-        let mut framebuffer = 0;
-        let mut renderbuffer = 0;
-
         let gl = gl::Gl::load_with(|symbol| {
             let symbol = CString::new(symbol).unwrap();
             display.get_proc_address(symbol.as_c_str()).cast()
@@ -131,19 +134,7 @@ impl Inochi2DPlugin {
         let puppet =
             Mutex::new(Inochi2DPuppet::new(PathBuf::from("./examples/Midori.inx")).unwrap());
         println!("Hii");
-        unsafe {
-            gl.GenFramebuffers(1, &mut framebuffer);
-            gl.GenRenderbuffers(1, &mut renderbuffer);
-            gl.BindFramebuffer(gl::FRAMEBUFFER, framebuffer);
-            gl.BindRenderbuffer(gl::RENDERBUFFER, renderbuffer);
-            gl.RenderbufferStorage(gl::RENDERBUFFER, gl::RGBA, 1280, 720);
-            gl.FramebufferRenderbuffer(
-                gl::FRAMEBUFFER,
-                gl::COLOR_ATTACHMENT0,
-                gl::RENDERBUFFER,
-                renderbuffer,
-            );
-        }
+
         println!("Hii");
         /* Setup the camera and zoom */
         let zoom: f64 = 0.15;
@@ -152,35 +143,48 @@ impl Inochi2DPlugin {
         /* Setup the Inochi2D scene to draw */
         let scene = Mutex::new(Inochi2DScene::new());
         println!("Hii");
-        commands.insert_resource(Inochi2DRes {
+
+        world.insert_non_send_resource(Inochi2DRes {
             scene,
             cam,
             puppet,
             ctx,
             gl_ctx: Mutex::new(context.make_not_current().unwrap()),
-            renderbuffer: Mutex::new(renderbuffer),
-            framebuffer: Mutex::new(framebuffer),
+
             display: Mutex::new(display),
             gl: Mutex::new(gl),
+            config: Mutex::new(config),
         });
         println!("Hii end");
     }
 
-    fn render(inochi: Res<Inochi2DRes>, mut images: ResMut<Assets<Image>>) {
-        let (mut puppet, mut scene, ctx, mut gl_ctx, gl) = {
+    fn render(
+        inochi: NonSend<Inochi2DRes>,
+        mut images: ResMut<Assets<Image>>,
+        windows: NonSend<WinitWindows>,
+    ) {
+        let primary = windows.get_window(WindowId::primary()).unwrap();
+        let (mut puppet, mut scene, ctx, mut gl_ctx, gl, config) = {
             (
                 inochi.puppet.lock().unwrap(),
                 inochi.scene.lock().unwrap(),
                 inochi.ctx.lock().unwrap(),
                 inochi.gl_ctx.lock().unwrap(),
                 inochi.gl.lock().unwrap(),
+                inochi.config.lock().unwrap(),
             )
         };
         replace_with(
             &mut (*gl_ctx),
             || todo!(),
             |gl_ctx| {
-                let gl_ctx = gl_ctx.make_current_surfaceless().unwrap();
+                let surface = Self::surface(
+                    primary.raw_window_handle(),
+                    ctx.view_width.try_into().unwrap(),
+                    ctx.view_height.try_into().unwrap(),
+                    &config,
+                );
+                let gl_ctx = gl_ctx.make_current(&surface).unwrap();
                 /* Update and then draw the puppet */
                 puppet.update();
                 puppet.draw();
@@ -188,42 +192,9 @@ impl Inochi2DPlugin {
                     0.0,
                     0.0,
                     (ctx.view_width + 0) as f32,
-                    (&ctx.view_height + 0) as f32,
+                    (ctx.view_height + 0) as f32,
                 );
-                println!("Hii end render");
-                let mut buffer = Vec::<u8>::with_capacity(1280 * 720 * 4);
 
-                unsafe {
-                    // Wait for the previous commands to finish before reading from the framebuffer.
-                    gl.Finish();
-                    // Download the framebuffer contents to the buffer.
-                    gl.ReadPixels(
-                        0,
-                        0,
-                        1280,
-                        720,
-                        gl::RGBA,
-                        gl::UNSIGNED_BYTE,
-                        buffer.as_mut_ptr() as *mut _,
-                    );
-                    buffer.set_len(1280 * 720 * 4);
-                }
-                let file = Vec::new();
-                let mut encoder = png::Encoder::new(file.clone(), 1280, 720);
-                encoder.set_depth(png::BitDepth::Eight);
-                encoder.set_color(png::ColorType::Rgba);
-                let mut png_writer = encoder.write_header().unwrap();
-
-                png_writer.write_image_data(&buffer[..]).unwrap();
-                png_writer.finish().unwrap();
-                let image = Image::from_buffer(
-                    &file.clone(),
-                    ImageType::MimeType("image/png"),
-                    CompressedImageFormats::NONE,
-                    false,
-                )
-                .unwrap();
-                images.add(image);
                 gl_ctx.make_not_current().unwrap()
             },
         );
@@ -231,19 +202,32 @@ impl Inochi2DPlugin {
         println!("Hi di");
     }
 
-    fn resize(mut resize: EventReader<WindowResized>, inochi: Res<Inochi2DRes>) {
+    fn resize(
+        mut resize: EventReader<WindowResized>,
+        inochi: NonSend<Inochi2DRes>,
+        windows: NonSend<WinitWindows>,
+    ) {
+        let primary = windows.get_window(WindowId::primary()).unwrap();
         for resize in resize.iter() {
             let mut gl_ctx = inochi.gl_ctx.lock().unwrap();
+            let config = inochi.config.lock().unwrap();
             println!("Hii");
             replace_with(
                 &mut (*gl_ctx),
                 || todo!(),
                 |gl_ctx| {
-                    let gl_ctx = gl_ctx.make_current_surfaceless().unwrap();
-                    println!("Hii end resize rddender");
-                    let (mut ctx, gl) = { (inochi.ctx.lock().unwrap(), inochi.gl.lock().unwrap()) };
                     let w = resize.width as i32 + 0;
                     let h = resize.height as i32 + 0;
+                    let surface = Self::surface(
+                        primary.raw_window_handle(),
+                        w.try_into().unwrap(),
+                        h.try_into().unwrap(),
+                        &config,
+                    );
+                    let gl_ctx = gl_ctx.make_current(&surface).unwrap();
+                    println!("Hii end resize rddender");
+                    let (mut ctx, gl) = { (inochi.ctx.lock().unwrap(), inochi.gl.lock().unwrap()) };
+
                     ctx.set_viewport(w, h);
                     println!("Hii end resize render");
                     unsafe {
@@ -258,6 +242,26 @@ impl Inochi2DPlugin {
                     gl_ctx
                 },
             );
+        }
+    }
+
+    fn surface(
+        raw_window_handle: RawWindowHandle,
+        width: u32,
+        height: u32,
+        config: &Config,
+    ) -> Surface<WindowSurface> {
+        let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
+            raw_window_handle,
+            NonZeroU32::new(width).unwrap(),
+            NonZeroU32::new(height).unwrap(),
+        );
+
+        unsafe {
+            config
+                .display()
+                .create_window_surface(&config, &attrs)
+                .unwrap()
         }
     }
 }
